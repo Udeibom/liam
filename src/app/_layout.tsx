@@ -29,14 +29,9 @@ export default function RootLayout() {
     router.replace('/(tabs)/home');
   }, [loading, session, profile]);
 
-  if (loading) {
-    return (
-      <View style={styles.splash}>
-        <ActivityIndicator size="large" color={Colors.primary} />
-      </View>
-    );
-  }
-
+  // Always render the SafeAreaProvider + Stack so the router is mounted
+  // and router.replace() inside useEffect can actually fire on web.
+  // The loading spinner overlays the Stack rather than replacing it.
   return (
     <SafeAreaProvider>
       <StatusBar style="light" />
@@ -47,6 +42,7 @@ export default function RootLayout() {
           animation: 'fade',
         }}
       >
+        <Stack.Screen name="index" options={{ animation: 'none' }} />
         <Stack.Screen name="(auth)" options={{ animation: 'none' }} />
         <Stack.Screen name="(tabs)" options={{ animation: 'none' }} />
         <Stack.Screen name="onboarding" options={{ animation: 'none' }} />
@@ -55,15 +51,22 @@ export default function RootLayout() {
         <Stack.Screen name="detective/index" options={{ animation: 'slide_from_bottom', presentation: 'modal' }} />
         <Stack.Screen name="product/[id]" options={{ animation: 'slide_from_right' }} />
       </Stack>
+
+      {/* Full-screen loading overlay while auth resolves — sits above the Stack */}
+      {loading && (
+        <View style={styles.loadingOverlay} pointerEvents="none">
+          <ActivityIndicator size="large" color={Colors.primary} />
+        </View>
+      )}
     </SafeAreaProvider>
   );
 }
 
 const styles = StyleSheet.create({
-  splash: {
-    flex: 1,
+  loadingOverlay: {
+    ...StyleSheet.absoluteFill,
     backgroundColor: Colors.bg,
-    alignItems: 'center',
-    justifyContent: 'center',
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
   },
 });
