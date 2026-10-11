@@ -4,10 +4,11 @@
 import { useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
 import { router } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button } from '@/components/ui';
 import { Colors, FontSize, FontWeight, Radius, Spacing } from '@/constants';
-import { onboardingData } from './step1';
+import { ONBOARDING_KEY } from './step1';
 
 const SENSITIVITIES = [
   'Fragrance', 'Alcohol', 'Retinol', 'AHAs / BHAs',
@@ -17,15 +18,19 @@ const SENSITIVITIES = [
 
 export default function OnboardingStep3() {
   const [selected, setSelected] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
 
-  const toggle = (item: string) => {
+  const toggle = (item: string) =>
     setSelected((prev) =>
       prev.includes(item) ? prev.filter((s) => s !== item) : [...prev, item],
     );
-  };
 
-  const handleNext = () => {
-    onboardingData.sensitivities = selected;
+  const handleNext = async () => {
+    setLoading(true);
+    const raw = await AsyncStorage.getItem(ONBOARDING_KEY);
+    const existing = raw ? JSON.parse(raw) : {};
+    await AsyncStorage.setItem(ONBOARDING_KEY, JSON.stringify({ ...existing, sensitivities: selected }));
+    setLoading(false);
     router.push('/onboarding/step4');
   };
 
@@ -34,10 +39,7 @@ export default function OnboardingStep3() {
       <ScrollView contentContainerStyle={styles.scroll}>
         <View style={styles.progress}>
           {[1, 2, 3, 4].map((step) => (
-            <View
-              key={step}
-              style={[styles.dot, step <= 3 ? styles.dotActive : styles.dotInactive]}
-            />
+            <View key={step} style={[styles.dot, step <= 3 ? styles.dotActive : styles.dotInactive]} />
           ))}
         </View>
 
@@ -59,9 +61,7 @@ export default function OnboardingStep3() {
                 accessibilityLabel={item}
                 accessibilityState={{ checked: isSelected }}
               >
-                <Text style={[styles.chipLabel, isSelected && styles.chipLabelSelected]}>
-                  {item}
-                </Text>
+                <Text style={[styles.chipLabel, isSelected && styles.chipLabelSelected]}>{item}</Text>
               </TouchableOpacity>
             );
           })}
@@ -69,7 +69,7 @@ export default function OnboardingStep3() {
       </ScrollView>
 
       <View style={styles.footer}>
-        <Button label="Continue" size="lg" fullWidth onPress={handleNext} />
+        <Button label="Continue" size="lg" fullWidth loading={loading} onPress={handleNext} />
       </View>
     </SafeAreaView>
   );
@@ -87,12 +87,9 @@ const styles = StyleSheet.create({
   subtitle: { fontSize: FontSize.base, color: Colors.textSecondary, lineHeight: 22 },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm },
   chip: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
-    borderRadius: Radius.full,
-    backgroundColor: Colors.bgCard,
-    borderWidth: 1,
-    borderColor: Colors.border,
+    paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm,
+    borderRadius: Radius.full, backgroundColor: Colors.bgCard,
+    borderWidth: 1, borderColor: Colors.border,
   },
   chipSelected: { borderColor: Colors.primary, backgroundColor: Colors.bgElevated },
   chipLabel: { fontSize: FontSize.sm, color: Colors.textPrimary, fontWeight: FontWeight.medium },
