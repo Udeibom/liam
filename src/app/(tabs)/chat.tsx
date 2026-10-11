@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams } from 'expo-router';
-import { supabase } from '@/lib/supabase';
+import { supabase, getCurrentUser } from '@/lib/supabase';
 import { Colors, FontSize, FontWeight, Spacing, Radius } from '@/constants';
 
 type Mode = 'general' | 'detective' | 'routine';
@@ -73,9 +73,7 @@ export default function ChatScreen() {
       setLoading(true);
 
       try {
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
+        const user = await getCurrentUser();
         if (!user) throw new Error('Not authenticated');
 
         await supabase.from('chat_messages').insert({
@@ -121,9 +119,7 @@ export default function ChatScreen() {
 
   useEffect(() => {
     const loadContext = async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
+      const user = await getCurrentUser();
       if (!user) return;
 
       const [profileRes, scansRes, productsRes, routineRes] = await Promise.all([

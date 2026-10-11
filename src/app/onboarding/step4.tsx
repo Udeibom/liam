@@ -9,7 +9,7 @@ import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-nati
 import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { supabase } from '@/lib/supabase';
+import { supabase, getCurrentUser } from '@/lib/supabase';
 import { Button } from '@/components/ui';
 import { Colors, FontSize, FontWeight, Radius, Spacing } from '@/constants';
 import { ONBOARDING_KEY } from './step1';
@@ -31,8 +31,8 @@ export default function OnboardingStep4() {
 
     try {
       // 1. Get authenticated user
-      const { data: { user }, error: userError } = await supabase.auth.getUser();
-      if (userError || !user) throw new Error('Not authenticated. Please sign in again.');
+      const user = await getCurrentUser();
+      if (!user) throw new Error('Session expired. Please sign in again.');
 
       // 2. Read onboarding data collected across steps
       const raw = await AsyncStorage.getItem(ONBOARDING_KEY);

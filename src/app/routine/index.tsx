@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { supabase } from '@/lib/supabase';
+import { supabase, getCurrentUser } from '@/lib/supabase';
 import { Card, Button } from '@/components/ui';
 import { Colors, FontSize, FontWeight, Spacing, Radius } from '@/constants';
 import type { Routine, RoutineStep, Product, SkinProfile, SkinScan } from '@/types';
@@ -39,7 +39,7 @@ export default function RoutineBuilderScreen() {
 
   useEffect(() => {
     const load = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
+      const user = await getCurrentUser();
       if (!user) return;
 
       const [profileRes, scanRes, productsRes, routineRes] = await Promise.all([
@@ -79,7 +79,7 @@ export default function RoutineBuilderScreen() {
     setSaved(false);
 
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const user = await getCurrentUser();
       if (!user) throw new Error('Not authenticated');
 
       const productList = ctx.activeProducts.map(
@@ -173,7 +173,7 @@ time_of_day must be one of: morning, evening, both`;
     setSaving(true);
 
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const user = await getCurrentUser();
       if (!user) throw new Error('Not authenticated');
 
       const { error } = await supabase.from('routines').upsert({

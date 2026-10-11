@@ -26,7 +26,7 @@ import {
 } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { supabase } from '@/lib/supabase';
+import { supabase, getCurrentUser } from '@/lib/supabase';
 import { Card, Button } from '@/components/ui';
 import { Colors, FontSize, FontWeight, Spacing, Radius } from '@/constants';
 import type { Product, SkinScan, TimelineEvent, SkinConcernScore } from '@/types';
@@ -98,7 +98,7 @@ export default function DetectiveScreen() {
     addMessage('lian', `I'm looking at your skin history around the time you noticed "${finalSymptom}"…`);
 
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const user = await getCurrentUser();
       if (!user) throw new Error('Not authenticated');
 
       const cutoffDate = new Date();

@@ -14,7 +14,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
-import { supabase } from '@/lib/supabase';
+import { supabase, getCurrentUser } from '@/lib/supabase';
 import { Button, Card } from '@/components/ui';
 import { Colors, FontSize, FontWeight, Spacing, Radius } from '@/constants';
 import type { Product, ProductVerdict } from '@/types';
@@ -55,7 +55,7 @@ export default function ProductsScreen() {
 
   const loadProducts = useCallback(async () => {
     setLoading(true);
-    const { data: { user } } = await supabase.auth.getUser();
+    const user = await getCurrentUser();
     if (!user) {
       setLoading(false);
       return;
@@ -161,7 +161,7 @@ export default function ProductsScreen() {
       const ingredients: string[] = data.ingredients ?? [];
 
       // Now get verdict from Groq, passing skin profile + previous reaction history
-      const { data: { user } } = await supabase.auth.getUser();
+      const user = await getCurrentUser();
 
       const [profileRes, reactedProductsRes] = await Promise.all([
         supabase.from('skin_profiles').select('*').eq('user_id', user!.id).single(),
@@ -248,7 +248,7 @@ Return JSON only with these exact keys:
 
   const saveProduct = async () => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const user = await getCurrentUser();
       if (!user) return;
 
       const { error } = await supabase.from('products').insert({
