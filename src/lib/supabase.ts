@@ -2,12 +2,12 @@ import { createClient } from '@supabase/supabase-js';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 
-const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
-const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
+const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? 'https://placeholder.supabase.co';
+const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? 'placeholder-anon-key';
 
 /**
- * SecureStore adapter so Supabase auth tokens are stored securely on device.
- * Falls back to in-memory on web (SecureStore is native-only).
+ * SecureStore adapter — stores Supabase auth tokens securely on device.
+ * Falls back to no-op on web (tokens stored in memory by Supabase client).
  */
 const ExpoSecureStoreAdapter = {
   getItem: (key: string) => {
