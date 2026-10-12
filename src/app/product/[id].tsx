@@ -15,13 +15,13 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Alert,
   TextInput,
   ActivityIndicator,
   Modal,
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { showAlert } from '@/lib/toast';
 import { supabase } from '@/lib/supabase';
 import { Card, Button } from '@/components/ui';
 import { Colors, FontSize, FontWeight, Spacing, Radius } from '@/constants';
@@ -127,9 +127,9 @@ export default function ProductDetailScreen() {
 
       setProduct((p) => p ? { ...p, status: 'stopped', stop_reason: reason || null } : p);
       closeModal();
-      Alert.alert('Done', `${product.name} marked as stopped.`);
+      showAlert('Done', `${product.name} marked as stopped.`);
     } catch (err) {
-      Alert.alert('Error', String(err));
+      showAlert('Error', String(err));
     } finally {
       setSaving(false);
     }
@@ -158,7 +158,7 @@ export default function ProductDetailScreen() {
       setProduct((p) => p ? { ...p, reported_reactions: updated } : p);
       closeModal();
     } catch (err) {
-      Alert.alert('Error', String(err));
+      showAlert('Error', String(err));
     } finally {
       setSaving(false);
     }
@@ -179,7 +179,7 @@ export default function ProductDetailScreen() {
       setProduct((p) => p ? { ...p, reported_improvements: updated } : p);
       closeModal();
     } catch (err) {
-      Alert.alert('Error', String(err));
+      showAlert('Error', String(err));
     } finally {
       setSaving(false);
     }
@@ -208,9 +208,9 @@ export default function ProductDetailScreen() {
       });
 
       setProduct((p) => p ? { ...p, status: 'active' } : p);
-      Alert.alert('Done', `${product.name} is now active again.`);
+      showAlert('Done', `${product.name} is now active again.`);
     } catch (err) {
-      Alert.alert('Error', String(err));
+      showAlert('Error', String(err));
     } finally {
       setSaving(false);
     }

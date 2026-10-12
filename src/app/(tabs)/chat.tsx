@@ -9,10 +9,10 @@ import {
   Platform,
   TextInput,
   ActivityIndicator,
-  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams } from 'expo-router';
+import { showAlert } from '@/lib/toast';
 import { supabase, getCurrentUser } from '@/lib/supabase';
 import { Colors, FontSize, FontWeight, Spacing, Radius } from '@/constants';
 
@@ -109,7 +109,7 @@ export default function ChatScreen() {
           content: fnData.reply,
         });
       } catch {
-        Alert.alert('Error', 'Could not get a response. Please try again.');
+        showAlert('Error', 'Could not get a response. Please try again.');
       } finally {
         setLoading(false);
       }

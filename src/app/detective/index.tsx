@@ -20,12 +20,12 @@ import {
   TouchableOpacity,
   TextInput,
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { showAlert } from '@/lib/toast';
 import { supabase, getCurrentUser } from '@/lib/supabase';
 import { Card, Button } from '@/components/ui';
 import { Colors, FontSize, FontWeight, Spacing, Radius } from '@/constants';
@@ -224,7 +224,7 @@ If the data doesn't clearly point to a cause, say so plainly. Don't invent expla
       setStep('report');
       addMessage('lian', fnData.reply);
     } catch (err) {
-      Alert.alert('Investigation failed', String(err));
+      showAlert('Investigation failed', String(err));
       setStep('symptom');
     } finally {
       setLoading(false);
@@ -262,7 +262,7 @@ If the data doesn't clearly point to a cause, say so plainly. Don't invent expla
       if (fnError) throw fnError;
       addMessage('lian', fnData.reply);
     } catch (err) {
-      Alert.alert('Error', String(err));
+      showAlert('Error', String(err));
     } finally {
       setLoading(false);
       setStep('follow_up');

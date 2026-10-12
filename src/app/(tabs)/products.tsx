@@ -6,7 +6,6 @@ import {
   StyleSheet,
   FlatList,
   TouchableOpacity,
-  Alert,
   ActivityIndicator,
   Modal,
   ScrollView,
@@ -15,6 +14,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
 import { supabase, getCurrentUser } from '@/lib/supabase';
+import { imageUriToBase64 } from '@/lib/imageUtils';
+import { showAlert } from '@/lib/toast';
 import { Button, Card } from '@/components/ui';
 import { Colors, FontSize, FontWeight, Spacing, Radius } from '@/constants';
 import type { Product, ProductVerdict } from '@/types';
@@ -87,7 +88,7 @@ export default function ProductsScreen() {
   const captureImage = async () => {
     const perm = await ImagePicker.requestCameraPermissionsAsync();
     if (!perm.granted) {
-      Alert.alert('Permission needed', 'Camera access is required to scan products.');
+      showAlert('Permission needed', 'Camera access is required to scan products.');
       return;
     }
 
@@ -111,9 +112,7 @@ export default function ProductsScreen() {
 
   const identifyProduct = async (uri: string) => {
     try {
-      const response = await fetch(uri);
-      const blob = await response.blob();
-      const base64 = await blobToBase64(blob);
+      const base64 = await imageUriToBase64(uri);
 
       const { data, error } = await supabase.functions.invoke('gemini-vision', {
         body: {
@@ -141,16 +140,14 @@ export default function ProductsScreen() {
       }));
       setScanMode('ingredients');
     } catch {
-      Alert.alert('Error', 'Could not identify the product. Please try again.');
+      showAlert('Error', 'Could not identify the product. Please try again.');
       setScanMode('front');
     }
   };
 
   const extractIngredients = async (uri: string) => {
     try {
-      const response = await fetch(uri);
-      const blob = await response.blob();
-      const base64 = await blobToBase64(blob);
+      const base64 = await imageUriToBase64(uri);
 
       const { data, error } = await supabase.functions.invoke('extract-ingredients', {
         body: { imageBase64: base64 },
@@ -241,7 +238,7 @@ Return JSON only with these exact keys:
       }));
       setScanMode('result');
     } catch {
-      Alert.alert('Error', 'Could not extract ingredients. Please try again.');
+      showAlert('Error', 'Could not extract ingredients. Please try again.');
       setScanMode('ingredients');
     }
   };
@@ -276,7 +273,7 @@ Return JSON only with these exact keys:
       setScanModalVisible(false);
       loadProducts();
     } catch (_err) {
-      Alert.alert('Error saving product', String(_err));
+      showAlert('Error saving product', String(_err));
     }
   };
 
@@ -504,17 +501,7 @@ Return JSON only with these exact keys:
   );
 }
 
-async function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const result = reader.result as string;
-      resolve(result.split(',')[1]);
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
-}
+
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.bg },

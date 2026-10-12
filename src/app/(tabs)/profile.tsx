@@ -5,11 +5,11 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Alert,
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
+import { showAlert, showConfirm } from '@/lib/toast';
 import { supabase, getCurrentUser } from '@/lib/supabase';
 import { Card, Button } from '@/components/ui';
 import { Colors, FontSize, FontWeight, Spacing } from '@/constants';
@@ -55,17 +55,14 @@ export default function ProfileScreen() {
   }, []);
 
   const handleSignOut = () => {
-    Alert.alert('Sign out', 'Are you sure you want to sign out?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Sign out',
-        style: 'destructive',
-        onPress: async () => {
-          await supabase.auth.signOut();
-          router.replace('/(auth)/welcome');
-        },
+    showConfirm(
+      'Sign out',
+      'Are you sure you want to sign out?',
+      async () => {
+        await supabase.auth.signOut();
+        router.replace('/(auth)/welcome');
       },
-    ]);
+    );
   };
 
   const EVENT_EMOJI: Record<string, string> = {

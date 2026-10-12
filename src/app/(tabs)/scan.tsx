@@ -5,13 +5,15 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Alert,
   Image,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { supabase, getCurrentUser } from '@/lib/supabase';
+import { imageUriToBase64, uploadImageToSupabase } from '@/lib/imageUtils';
+import { showAlert } from '@/lib/toast';
 import { Button, Card } from '@/components/ui';
 import { Colors, FontSize, FontWeight, Spacing, Radius } from '@/constants';
 import type { SkinScan } from '@/types';
@@ -29,27 +31,36 @@ export default function ScanScreen() {
   const [step, setStep] = useState<ScanStep>('idle');
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [result, setResult] = useState<SkinScan | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const pickImage = async (fromCamera: boolean) => {
+    setErrorMsg(null);
+
+    // Camera is native-only — on web always fall back to library picker
+    if (fromCamera && Platform.OS === 'web') {
+      showAlert('Camera not available', 'Please upload a photo from your library instead.');
+      fromCamera = false;
+    }
+
     const permission = fromCamera
       ? await ImagePicker.requestCameraPermissionsAsync()
       : await ImagePicker.requestMediaLibraryPermissionsAsync();
 
     if (!permission.granted) {
-      Alert.alert(
+      showAlert(
         'Permission required',
         `LIAN needs ${fromCamera ? 'camera' : 'photo library'} access to scan your skin.`,
       );
       return;
     }
 
-    const result = fromCamera
+    const picked = fromCamera
       ? await ImagePicker.launchCameraAsync({
           mediaTypes: 'images',
           allowsEditing: true,
           aspect: [1, 1],
           quality: 0.8,
-          cameraType: ImagePicker.CameraType.front,
+          // No cameraType — deprecated in SDK 57; front/back chosen by user
         })
       : await ImagePicker.launchImageLibraryAsync({
           mediaTypes: 'images',
@@ -58,8 +69,8 @@ export default function ScanScreen() {
           quality: 0.8,
         });
 
-    if (!result.canceled && result.assets[0]) {
-      setImageUri(result.assets[0].uri);
+    if (!picked.canceled && picked.assets[0]) {
+      setImageUri(picked.assets[0].uri);
       setStep('captured');
     }
   };
@@ -67,78 +78,69 @@ export default function ScanScreen() {
   const runScan = async () => {
     if (!imageUri) return;
     setStep('analyzing');
+    setErrorMsg(null);
 
     try {
-      // Convert image to base64
-      const response = await fetch(imageUri);
-      const blob = await response.blob();
-      const base64 = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          const result = reader.result as string;
-          resolve(result.split(',')[1]); // strip data:image/...;base64, prefix
-        };
-        reader.onerror = reject;
-        reader.readAsDataURL(blob);
-      });
+      const user = await getCurrentUser();
+      if (!user) throw new Error('Session expired — please sign in again.');
 
-      // Call YouCam + Gemini via edge function
+      // ── 1. Convert image to base64 (cross-platform) ──────────────────────
+      const base64 = await imageUriToBase64(imageUri);
+
+      // ── 2. Call YouCam + Gemini via edge function ─────────────────────────
       const { data: fnData, error: fnError } = await supabase.functions.invoke('youcam-scan', {
         body: { imageBase64: base64 },
       });
+      if (fnError) throw new Error(`AI analysis failed: ${fnError.message}`);
 
-      if (fnError) throw fnError;
+      const { youcamRaw, interpretation } = fnData as {
+        youcamRaw: Record<string, unknown>;
+        interpretation: string;
+      };
 
-      const { youcamRaw, interpretation } = fnData;
-
-      // Upload image to storage
-      const user = await getCurrentUser();
-      if (!user) throw new Error('Not authenticated');
-
+      // ── 3. Upload image to private storage (cross-platform) ───────────────
       const fileName = `${user.id}/${Date.now()}.jpg`;
-      const { error: uploadError } = await supabase.storage
-        .from('scan-images')
-        .upload(fileName, blob, { contentType: 'image/jpeg' });
+      const { signedUrl } = await uploadImageToSupabase(
+        imageUri,
+        'scan-images',
+        fileName,
+        supabase,
+      );
 
-      if (uploadError) throw uploadError;
-
-      const { data: { publicUrl } } = supabase.storage
-        .from('scan-images')
-        .getPublicUrl(fileName);
-
-      // Parse YouCam concerns into our schema
+      // ── 4. Parse YouCam concerns ──────────────────────────────────────────
       const concerns = parseConcerns(youcamRaw);
 
-      // Save scan to database
+      // ── 5. Save scan to database ──────────────────────────────────────────
       const { data: scanData, error: dbError } = await supabase
         .from('skin_scans')
         .insert({
           user_id: user.id,
-          image_url: publicUrl,
+          image_url: signedUrl,
           youcam_raw: youcamRaw,
           concerns,
           ai_interpretation: interpretation,
-          skin_type_detected: (youcamRaw as any)?.skin_type ?? 'unknown',
+          skin_type_detected: (youcamRaw as Record<string, string>)?.skin_type ?? 'unknown',
         })
         .select()
         .single();
 
-      if (dbError) throw dbError;
+      if (dbError) throw new Error(`Failed to save scan: ${dbError.message}`);
 
-      // Log timeline event
+      // ── 6. Timeline event ─────────────────────────────────────────────────
       await supabase.from('timeline_events').insert({
         user_id: user.id,
         event_type: 'scan',
         title: 'Skin scan completed',
-        description: 'New skin analysis recorded',
+        description: `${concerns.length} concerns tracked`,
         related_scan_id: scanData.id,
       });
 
       setResult(scanData as SkinScan);
       setStep('result');
     } catch (err) {
-      Alert.alert('Scan failed', String(err));
-      setStep('captured');
+      const msg = err instanceof Error ? err.message : String(err);
+      setErrorMsg(msg);
+      setStep('captured'); // go back so they can retry
     }
   };
 
@@ -146,6 +148,7 @@ export default function ScanScreen() {
     setStep('idle');
     setImageUri(null);
     setResult(null);
+    setErrorMsg(null);
   };
 
   return (
@@ -153,58 +156,74 @@ export default function ScanScreen() {
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
         <Text style={styles.title}>Skin Scan</Text>
         <Text style={styles.subtitle}>
-          Take a well-lit, front-facing photo for the most accurate results.
+          Use a well-lit, front-facing photo for accurate results.
         </Text>
 
-        {/* Idle state */}
-        {step === 'idle' && (
-          <View style={styles.photoOptions}>
-            <TouchableOpacity
-              style={styles.photoOption}
-              onPress={() => pickImage(true)}
-              accessibilityRole="button"
-              accessibilityLabel="Take a photo with your camera"
-            >
-              <Text style={styles.photoOptionEmoji}>📷</Text>
-              <Text style={styles.photoOptionLabel}>Take photo</Text>
-              <Text style={styles.photoOptionDesc}>Use front camera</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.photoOption}
-              onPress={() => pickImage(false)}
-              accessibilityRole="button"
-              accessibilityLabel="Upload a photo from your library"
-            >
-              <Text style={styles.photoOptionEmoji}>🖼️</Text>
-              <Text style={styles.photoOptionLabel}>Upload photo</Text>
-              <Text style={styles.photoOptionDesc}>From your library</Text>
+        {/* ── Error banner ── */}
+        {errorMsg && (
+          <View style={styles.errorBanner}>
+            <Text style={styles.errorText}>⚠️ {errorMsg}</Text>
+            <TouchableOpacity onPress={() => setErrorMsg(null)} accessibilityRole="button" accessibilityLabel="Dismiss error">
+              <Text style={styles.errorDismiss}>✕</Text>
             </TouchableOpacity>
           </View>
         )}
 
-        {/* Photo tips */}
+        {/* ── Idle: pick method ── */}
         {step === 'idle' && (
-          <Card>
-            <Text style={styles.tipTitle}>Tips for accurate results</Text>
-            {[
-              '💡 Good, natural lighting — face a window',
-              '📱 Hold the camera at face level',
-              '😐 Neutral expression, no glasses',
-              '🚿 Clean, bare skin (no makeup)',
-            ].map((tip) => (
-              <Text key={tip} style={styles.tip}>{tip}</Text>
-            ))}
-          </Card>
+          <>
+            <View style={styles.photoOptions}>
+              {/* Camera only on native */}
+              {Platform.OS !== 'web' && (
+                <TouchableOpacity
+                  style={styles.photoOption}
+                  onPress={() => pickImage(true)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Take a photo with your camera"
+                >
+                  <Text style={styles.photoEmoji}>📷</Text>
+                  <Text style={styles.photoLabel}>Take photo</Text>
+                  <Text style={styles.photoDesc}>Use camera</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                style={[styles.photoOption, Platform.OS === 'web' && styles.photoOptionFull]}
+                onPress={() => pickImage(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Upload a photo from your library"
+              >
+                <Text style={styles.photoEmoji}>🖼️</Text>
+                <Text style={styles.photoLabel}>Upload photo</Text>
+                <Text style={styles.photoDesc}>From your library</Text>
+              </TouchableOpacity>
+            </View>
+
+            <Card>
+              <Text style={styles.tipTitle}>Tips for accurate results</Text>
+              {[
+                '💡 Natural light — face a window',
+                '📱 Camera at face level',
+                '😐 Neutral expression, no glasses',
+                '🚿 Clean bare skin, no makeup',
+              ].map((tip) => (
+                <Text key={tip} style={styles.tip}>{tip}</Text>
+              ))}
+            </Card>
+          </>
         )}
 
-        {/* Captured — preview */}
+        {/* ── Captured: preview ── */}
         {(step === 'captured' || step === 'analyzing') && imageUri && (
           <View style={styles.preview}>
-            <Image source={{ uri: imageUri }} style={styles.previewImage} />
+            <Image
+              source={{ uri: imageUri }}
+              style={styles.previewImage}
+              accessibilityLabel="Selected skin scan photo"
+            />
             {step === 'analyzing' && (
               <View style={styles.analyzingOverlay}>
                 <ActivityIndicator size="large" color={Colors.primary} />
-                <Text style={styles.analyzingText}>Analyzing your skin…</Text>
+                <Text style={styles.analyzingText}>Analysing your skin…</Text>
                 <Text style={styles.analyzingSubtext}>This takes about 10 seconds</Text>
               </View>
             )}
@@ -214,11 +233,11 @@ export default function ScanScreen() {
         {step === 'captured' && (
           <View style={styles.captureActions}>
             <Button label="Retake" variant="secondary" onPress={reset} style={{ flex: 1 }} />
-            <Button label="Analyze skin" onPress={runScan} style={{ flex: 2 }} />
+            <Button label="Analyse skin" onPress={runScan} style={{ flex: 2 }} />
           </View>
         )}
 
-        {/* Results */}
+        {/* ── Results ── */}
         {step === 'result' && result && (
           <View style={styles.results}>
             <Card>
@@ -227,7 +246,8 @@ export default function ScanScreen() {
             </Card>
 
             <Text style={styles.concernsTitle}>Concern breakdown</Text>
-            {result.concerns.map((c) => (
+
+            {(result.concerns as Array<{ concern: string; score: number; severity: string }>).map((c) => (
               <Card key={c.concern} style={styles.concernCard}>
                 <View style={styles.concernHeader}>
                   <View
@@ -236,9 +256,7 @@ export default function ScanScreen() {
                       { backgroundColor: SEVERITY_COLOR[c.severity] ?? Colors.textTertiary },
                     ]}
                   />
-                  <Text style={styles.concernName}>
-                    {c.concern.replace(/_/g, ' ')}
-                  </Text>
+                  <Text style={styles.concernName}>{c.concern.replace(/_/g, ' ')}</Text>
                   <Text
                     style={[
                       styles.concernSeverity,
@@ -248,7 +266,7 @@ export default function ScanScreen() {
                     {c.severity}
                   </Text>
                 </View>
-                <View style={styles.scoreBar}>
+                <View style={styles.scoreBarBg}>
                   <View
                     style={[
                       styles.scoreBarFill,
@@ -270,27 +288,26 @@ export default function ScanScreen() {
   );
 }
 
+// ─── Parse YouCam raw response into our concern schema ────────────────────────
 function parseConcerns(youcamRaw: Record<string, unknown>) {
-  // YouCam returns different structures depending on API version.
-  // This handles the most common shape.
-  const concerns = [];
-  const scoreMap = (youcamRaw?.scores ?? youcamRaw?.results ?? {}) as Record<string, number>;
+  const scoreMap = (
+    (youcamRaw?.scores ?? youcamRaw?.results ?? youcamRaw?.data ?? {}) as Record<string, number>
+  );
 
-  for (const [key, score] of Object.entries(scoreMap)) {
-    if (typeof score !== 'number') continue;
-    const normalised = Math.min(100, Math.max(0, score));
-    concerns.push({
-      concern: key,
-      score: normalised,
-      severity:
-        normalised >= 70 ? 'severe'
-        : normalised >= 45 ? 'moderate'
-        : normalised >= 20 ? 'mild'
-        : 'none',
-    });
-  }
-
-  return concerns.sort((a, b) => b.score - a.score);
+  return Object.entries(scoreMap)
+    .filter(([, score]) => typeof score === 'number')
+    .map(([key, score]) => {
+      const normalised = Math.min(100, Math.max(0, score));
+      return {
+        concern: key,
+        score: normalised,
+        severity:
+          normalised >= 70 ? 'severe' :
+          normalised >= 45 ? 'moderate' :
+          normalised >= 20 ? 'mild' : 'none',
+      };
+    })
+    .sort((a, b) => b.score - a.score);
 }
 
 const styles = StyleSheet.create({
@@ -298,6 +315,19 @@ const styles = StyleSheet.create({
   scroll: { padding: Spacing.lg, gap: Spacing.lg, paddingBottom: Spacing.xl },
   title: { fontSize: FontSize.xl, fontWeight: FontWeight.bold, color: Colors.textPrimary },
   subtitle: { fontSize: FontSize.base, color: Colors.textSecondary, lineHeight: 22, marginTop: -Spacing.sm },
+  errorBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    backgroundColor: Colors.errorBg,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.error,
+    padding: Spacing.md,
+    gap: Spacing.sm,
+  },
+  errorText: { flex: 1, fontSize: FontSize.sm, color: Colors.error, lineHeight: 20 },
+  errorDismiss: { fontSize: FontSize.base, color: Colors.error, fontWeight: FontWeight.bold },
   photoOptions: { flexDirection: 'row', gap: Spacing.md },
   photoOption: {
     flex: 1,
@@ -309,9 +339,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.xs,
   },
-  photoOptionEmoji: { fontSize: 32 },
-  photoOptionLabel: { fontSize: FontSize.md, fontWeight: FontWeight.semiBold, color: Colors.textPrimary },
-  photoOptionDesc: { fontSize: FontSize.xs, color: Colors.textSecondary },
+  photoOptionFull: { flex: undefined, width: '100%' },
+  photoEmoji: { fontSize: 32 },
+  photoLabel: { fontSize: FontSize.md, fontWeight: FontWeight.semiBold, color: Colors.textPrimary },
+  photoDesc: { fontSize: FontSize.xs, color: Colors.textSecondary },
   tipTitle: { fontSize: FontSize.base, fontWeight: FontWeight.semiBold, color: Colors.textPrimary, marginBottom: Spacing.sm },
   tip: { fontSize: FontSize.sm, color: Colors.textSecondary, lineHeight: 22 },
   preview: { borderRadius: Radius.lg, overflow: 'hidden', position: 'relative' },
@@ -336,11 +367,6 @@ const styles = StyleSheet.create({
   concernBar: { width: 4, height: 20, borderRadius: 2 },
   concernName: { flex: 1, fontSize: FontSize.base, color: Colors.textPrimary, textTransform: 'capitalize' },
   concernSeverity: { fontSize: FontSize.sm, fontWeight: FontWeight.medium, textTransform: 'capitalize' },
-  scoreBar: {
-    height: 6,
-    backgroundColor: Colors.border,
-    borderRadius: 3,
-    overflow: 'hidden',
-  },
+  scoreBarBg: { height: 6, backgroundColor: Colors.border, borderRadius: 3, overflow: 'hidden' },
   scoreBarFill: { height: '100%', borderRadius: 3 },
 });

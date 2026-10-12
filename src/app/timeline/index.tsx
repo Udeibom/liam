@@ -15,10 +15,10 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   Image,
-  Alert,
 } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { showAlert } from '@/lib/toast';
 import { supabase, getCurrentUser } from '@/lib/supabase';
 import { Card, Button } from '@/components/ui';
 import { Colors, FontSize, FontWeight, Spacing, Radius } from '@/constants';
@@ -113,7 +113,7 @@ export default function TimelineScreen() {
 
   const analyseProgress = async () => {
     if (scans.length < 2) {
-      Alert.alert('Need more scans', 'Take another scan after a few weeks to compare.');
+      showAlert('Need more scans', 'Take another scan after a few weeks to compare.');
       return;
     }
     setAnalysing(true);
@@ -164,7 +164,7 @@ Be honest. If there's insufficient data, say so clearly.`,
       if (fnError) throw fnError;
       setAnalysis(fnData.reply);
     } catch (err) {
-      Alert.alert('Analysis failed', String(err));
+      showAlert('Analysis failed', String(err));
     } finally {
       setAnalysing(false);
     }
@@ -214,7 +214,7 @@ Keep it concise and direct. Don't pad the answer.`,
       if (fnError) throw fnError;
       setSpotAnalysis(fnData.reply);
     } catch (err) {
-      Alert.alert('Analysis failed', String(err));
+      showAlert('Analysis failed', String(err));
     } finally {
       setSpotAnalysing(false);
     }

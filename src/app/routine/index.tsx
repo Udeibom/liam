@@ -6,10 +6,10 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
-  Alert,
 } from 'react-native';
 import { router } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { showAlert } from '@/lib/toast';
 import { supabase, getCurrentUser } from '@/lib/supabase';
 import { Card, Button } from '@/components/ui';
 import { Colors, FontSize, FontWeight, Spacing, Radius } from '@/constants';
@@ -162,7 +162,7 @@ time_of_day must be one of: morning, evening, both`;
         updated_at: '',
       });
     } catch (err) {
-      Alert.alert('Could not build routine', String(err));
+      showAlert('Could not build routine', String(err));
     } finally {
       setGenerating(false);
     }
@@ -192,9 +192,9 @@ time_of_day must be one of: morning, evening, both`;
       });
 
       setSaved(true);
-      Alert.alert('Saved', 'Your routine has been saved.');
+      showAlert('Saved', 'Your routine has been saved.');
     } catch (err) {
-      Alert.alert('Save failed', String(err));
+      showAlert('Save failed', String(err));
     } finally {
       setSaving(false);
     }
