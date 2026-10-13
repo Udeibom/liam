@@ -87,18 +87,63 @@ export default function ScanScreen() {
       // ── 1. Convert image to base64 (cross-platform) ──────────────────────
       const base64 = await imageUriToBase64(imageUri);
 
-      // ── 2. Call YouCam + Gemini via edge function ─────────────────────────
-      const { data: fnData, error: fnError } = await supabase.functions.invoke('youcam-scan', {
-        body: { imageBase64: base64 },
+      // ── 2. Start YouCam analysis (returns task_id immediately) ────────────
+      const { data: startData, error: startError } = await supabase.functions.invoke('youcam-scan', {
+        body: { action: 'start', imageBase64: base64 },
       });
-      if (fnError) throw new Error(`AI analysis failed: ${fnError.message}`);
+      if (startError) throw new Error(`Failed to start analysis: ${startError.message}`);
+      const taskId = startData?.task_id;
+      if (!taskId) throw new Error('No task_id returned from YouCam');
 
-      const { youcamRaw, interpretation } = fnData as {
-        youcamRaw: Record<string, unknown>;
-        interpretation: string;
-      };
+      // ── 3. Poll for YouCam result ─────────────────────────────────────────
+      let youcamRaw: Record<string, unknown> | null = null;
+      const maxPolls = 30;
+      const pollIntervalMs = 2000;
 
-      // ── 3. Upload image to private storage (cross-platform) ───────────────
+      for (let attempt = 0; attempt < maxPolls; attempt++) {
+        const { data: pollData, error: pollError } = await supabase.functions.invoke('youcam-scan', {
+          body: { action: 'poll', task_id: taskId },
+        });
+        if (pollError) throw new Error(`Polling failed: ${pollError.message}`);
+
+        if (pollData?.status === 'completed') {
+          youcamRaw = pollData.result as Record<string, unknown>;
+          break;
+        }
+        if (pollData?.status === 'failed') {
+          throw new Error(`YouCam analysis failed: ${pollData.error}`);
+        }
+
+        // Still processing, wait before next poll
+        await new Promise((r) => setTimeout(r, pollIntervalMs));
+      }
+
+      if (!youcamRaw) {
+        throw new Error('YouCam analysis timed out');
+      }
+
+      // ── 4. Get Gemini interpretation ──────────────────────────────────────
+      const { data: geminiData, error: geminiError } = await supabase.functions.invoke('gemini-vision', {
+        body: {
+          imageBase64: base64,
+          prompt: `You are a skin analysis expert for the LIAN app. Below are raw skin analysis scores from the YouCam AI API.
+
+Convert these into clear, empathetic, plain-language findings for the user. Format as:
+1. A one-paragraph overview of their skin right now
+2. A list of their top 3 concerns with a brief explanation of each
+3. One key recommendation or takeaway
+
+Do NOT just repeat the scores. Interpret what they mean for a real person.
+Do NOT claim to diagnose any medical condition.
+
+YouCam data:
+${JSON.stringify(youcamRaw, null, 2)}`,
+        },
+      });
+      if (geminiError) throw new Error(`Interpretation failed: ${geminiError.message}`);
+      const interpretation = geminiData?.analysis ?? '';
+
+      // ── 5. Upload image to private storage (cross-platform) ───────────────
       const fileName = `${user.id}/${Date.now()}.jpg`;
       const { signedUrl } = await uploadImageToSupabase(
         imageUri,
@@ -107,10 +152,10 @@ export default function ScanScreen() {
         supabase,
       );
 
-      // ── 4. Parse YouCam concerns ──────────────────────────────────────────
+      // ── 6. Parse YouCam concerns ──────────────────────────────────────────
       const concerns = parseConcerns(youcamRaw);
 
-      // ── 5. Save scan to database ──────────────────────────────────────────
+      // ── 7. Save scan to database ──────────────────────────────────────────
       const { data: scanData, error: dbError } = await supabase
         .from('skin_scans')
         .insert({
@@ -126,7 +171,7 @@ export default function ScanScreen() {
 
       if (dbError) throw new Error(`Failed to save scan: ${dbError.message}`);
 
-      // ── 6. Timeline event ─────────────────────────────────────────────────
+      // ── 8. Timeline event ─────────────────────────────────────────────────
       await supabase.from('timeline_events').insert({
         user_id: user.id,
         event_type: 'scan',
@@ -247,7 +292,7 @@ export default function ScanScreen() {
 
             <Text style={styles.concernsTitle}>Concern breakdown</Text>
 
-            {(result.concerns as Array<{ concern: string; score: number; severity: string }>).map((c) => (
+            {(result.concerns as { concern: string; score: number; severity: string }[]).map((c) => (
               <Card key={c.concern} style={styles.concernCard}>
                 <View style={styles.concernHeader}>
                   <View
