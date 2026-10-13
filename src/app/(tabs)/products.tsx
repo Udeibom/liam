@@ -14,11 +14,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
 import { supabase, getCurrentUser } from '@/lib/supabase';
-import { imageUriToBase64 } from '@/lib/imageUtils';
+import { imageUriToBase64, uploadImageToSupabase } from '@/lib/imageUtils';
 import { showAlert } from '@/lib/toast';
 import { Button, Card } from '@/components/ui';
 import { Colors, FontSize, FontWeight, Spacing, Radius } from '@/constants';
-import type { Product, ProductVerdict } from '@/types';
+import type { Product, ProductCategory, ProductVerdict } from '@/types';
 
 const VERDICT_COLOR: Record<ProductVerdict, string> = {
   good: Colors.verdictGood,
@@ -35,6 +35,7 @@ const VERDICT_EMOJI: Record<ProductVerdict, string> = {
 };
 
 type ScanMode = 'front' | 'ingredients' | 'analyzing' | 'result';
+type FilterMode = 'active' | 'stopped' | 'all';
 
 interface ScannedProduct {
   name: string;
@@ -46,30 +47,43 @@ interface ScannedProduct {
   cautionIngredients: string[];
 }
 
+const PRODUCT_CATEGORIES: { value: ProductCategory; label: string }[] = [
+  { value: 'cleanser', label: 'Cleanser' },
+  { value: 'moisturizer', label: 'Moisturizer' },
+  { value: 'sunscreen', label: 'Sunscreen' },
+  { value: 'serum', label: 'Serum' },
+  { value: 'toner', label: 'Toner' },
+  { value: 'exfoliant', label: 'Exfoliant' },
+  { value: 'treatment', label: 'Treatment' },
+  { value: 'mask', label: 'Mask' },
+  { value: 'eye_cream', label: 'Eye Cream' },
+  { value: 'oil', label: 'Oil' },
+  { value: 'other', label: 'Other' },
+];
+
 export default function ProductsScreen() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
+  const [activeFilter, setActiveFilter] = useState<FilterMode>('active');
   const [scanModalVisible, setScanModalVisible] = useState(false);
   const [scanMode, setScanMode] = useState<ScanMode>('front');
   const [scannedProduct, setScannedProduct] = useState<Partial<ScannedProduct>>({});
-  const [activeFilter, setActiveFilter] = useState<'active' | 'stopped' | 'all'>('active');
+  const [categoryModalVisible, setCategoryModalVisible] = useState(false);
+  const [tempCategory, setTempCategory] = useState<ProductCategory>('other');
 
   const loadProducts = useCallback(async () => {
     setLoading(true);
     const user = await getCurrentUser();
-    if (!user) {
-      setLoading(false);
-      return;
-    }
+    if (!user) { setLoading(false); return; }
 
-    const query = supabase
+    let query = supabase
       .from('products')
       .select('*')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false });
 
     if (activeFilter !== 'all') {
-      query.eq('status', activeFilter);
+      query = query.eq('status', activeFilter);
     }
 
     const { data } = await query;
@@ -81,6 +95,7 @@ export default function ProductsScreen() {
 
   const startProductScan = () => {
     setScannedProduct({});
+    setTempCategory('other');
     setScanMode('front');
     setScanModalVisible(true);
   };
@@ -101,11 +116,10 @@ export default function ProductsScreen() {
     if (result.canceled || !result.assets[0]) return;
     const uri = result.assets[0].uri;
 
+    setScanMode('analyzing');
     if (scanMode === 'front') {
-      setScanMode('analyzing');
       await identifyProduct(uri);
     } else {
-      setScanMode('analyzing');
       await extractIngredients(uri);
     }
   };
@@ -145,6 +159,10 @@ export default function ProductsScreen() {
     }
   };
 
+  /**
+   * Extract ingredients from an image, check for reaction history, and
+   * get an AI verdict. Single clean function — no duplicated logic.
+   */
   const extractIngredients = async (uri: string) => {
     try {
       const base64 = await imageUriToBase64(uri);
@@ -157,12 +175,10 @@ export default function ProductsScreen() {
 
       const ingredients: string[] = data.ingredients ?? [];
 
-      // Now get verdict from Groq, passing skin profile + previous reaction history
+      // Fetch skin profile + reaction history in parallel
       const user = await getCurrentUser();
-
       const [profileRes, reactedProductsRes] = await Promise.all([
         supabase.from('skin_profiles').select('*').eq('user_id', user!.id).single(),
-        // Fetch all products where user reported reactions — this is the blacklist
         supabase
           .from('products')
           .select('name, ingredients, reported_reactions')
@@ -170,7 +186,7 @@ export default function ProductsScreen() {
           .not('reported_reactions', 'eq', '{}'),
       ]);
 
-      // Build a caution list: ingredients from previously reacted-to products
+      // Find shared ingredients between new product and previously reacted products
       const reactedProducts = reactedProductsRes.data ?? [];
       const cautionIngredients: string[] = [];
       const cautionContext = reactedProducts
@@ -196,7 +212,8 @@ export default function ProductsScreen() {
         ? `\n\nIMPORTANT — INGREDIENT CAUTION:\n${cautionContext}\nThis new product shares those ingredients. Flag this prominently in your verdict.`
         : '';
 
-      const { data: verdictData } = await supabase.functions.invoke('groq-chat', {
+      // Get AI verdict — pass ingredient list + reaction history
+      const { data: verdictData, error: verdictError } = await supabase.functions.invoke('groq-chat', {
         body: {
           messages: [
             {
@@ -204,12 +221,12 @@ export default function ProductsScreen() {
               content: `Evaluate this skincare product for the user.
 
 Product: ${scannedProduct.name ?? 'Unknown'} by ${scannedProduct.brand ?? 'Unknown brand'}
-Ingredients: ${ingredients.slice(0, 30).join(', ')}${blacklistWarning}
+Ingredients (may be incomplete if extracted from photo): ${ingredients.slice(0, 30).join(', ')}${blacklistWarning}
 
 Return JSON only with these exact keys:
 {
   "verdict": "good" | "caution" | "avoid",
-  "reason": "one or two sentences explaining the verdict based on this user's specific skin profile and reaction history"
+  "reason": "one or two sentences. Be tentative — state uncertainty if ingredient lists may be incomplete. Do not make medical claims. Present this as a compatibility assessment, not a medical determination."
 }`,
             },
           ],
@@ -217,16 +234,20 @@ Return JSON only with these exact keys:
         },
       });
 
+      if (verdictError) throw verdictError;
+
       let verdict: ProductVerdict = 'unknown';
       let verdictReason = '';
       try {
         const text: string = verdictData.reply;
         const cleaned = text.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
         const parsed = JSON.parse(cleaned);
-        verdict = parsed.verdict ?? 'unknown';
-        verdictReason = parsed.reason ?? '';
+        if (parsed.verdict === 'good' || parsed.verdict === 'caution' || parsed.verdict === 'avoid') {
+          verdict = parsed.verdict;
+        }
+        verdictReason = typeof parsed.reason === 'string' ? parsed.reason : '';
       } catch {
-        // non-fatal
+        // non-fatal — keeps verdict as 'unknown'
       }
 
       setScannedProduct((prev) => ({
@@ -243,26 +264,50 @@ Return JSON only with these exact keys:
     }
   };
 
+  /**
+   * Save the scanned product to Supabase.
+   * Uploads the captured image to Storage first (if available) so the
+   * product card can show the actual product photo rather than a generic icon.
+   */
   const saveProduct = async () => {
     try {
       const user = await getCurrentUser();
       if (!user) return;
 
+      // Upload product photo to Supabase Storage if we captured one
+      let storedImageUrl: string | null = null;
+      if (scannedProduct.imageUri) {
+        try {
+          const filePath = `${user.id}/${Date.now()}.jpg`;
+          const { signedUrl } = await uploadImageToSupabase(
+            scannedProduct.imageUri,
+            'product-images',
+            filePath,
+            supabase,
+          );
+          storedImageUrl = signedUrl;
+        } catch (uploadErr) {
+          // Non-fatal — save the product without an image rather than failing entirely
+          console.warn('Product image upload failed:', uploadErr);
+        }
+      }
+
       const { error } = await supabase.from('products').insert({
         user_id: user.id,
         name: scannedProduct.name ?? 'Unknown',
         brand: scannedProduct.brand ?? null,
-        category: 'other',
+        category: tempCategory,
         ingredients: scannedProduct.ingredients ?? [],
         status: 'active',
         started_at: new Date().toISOString(),
         verdict: scannedProduct.verdict ?? 'unknown',
         verdict_reason: scannedProduct.verdictReason ?? null,
+        image_url: storedImageUrl,
       });
 
       if (error) throw error;
 
-      // Timeline event
+      // Record timeline event
       await supabase.from('timeline_events').insert({
         user_id: user.id,
         event_type: 'product_added',
@@ -272,8 +317,8 @@ Return JSON only with these exact keys:
 
       setScanModalVisible(false);
       loadProducts();
-    } catch (_err) {
-      showAlert('Error saving product', String(_err));
+    } catch (err) {
+      showAlert('Error saving product', String(err));
     }
   };
 
@@ -357,7 +402,7 @@ Return JSON only with these exact keys:
         />
       )}
 
-      {/* Product scan modal */}
+      {/* ── Product scan modal ── */}
       <Modal
         visible={scanModalVisible}
         animationType="slide"
@@ -423,8 +468,7 @@ Return JSON only with these exact keys:
                   style={[
                     styles.verdictBanner,
                     {
-                      borderColor:
-                        VERDICT_COLOR[scannedProduct.verdict ?? 'unknown'],
+                      borderColor: VERDICT_COLOR[scannedProduct.verdict ?? 'unknown'],
                       backgroundColor:
                         scannedProduct.verdict === 'good'
                           ? Colors.successBg
@@ -465,7 +509,7 @@ Return JSON only with these exact keys:
                   </Text>
                 </Card>
 
-                {/* Blacklist / caution banner */}
+                {/* Reaction / caution banner */}
                 {(scannedProduct.cautionIngredients?.length ?? 0) > 0 && (
                   <View style={styles.blacklistBanner}>
                     <Text style={styles.blacklistTitle}>⚠️ Ingredient caution</Text>
@@ -481,9 +525,9 @@ Return JSON only with these exact keys:
 
                 <View style={styles.resultActions}>
                   <Button
-                    label="Add to my library"
+                    label={`Add to my library (${PRODUCT_CATEGORIES.find((c) => c.value === tempCategory)?.label ?? tempCategory})`}
                     fullWidth
-                    onPress={saveProduct}
+                    onPress={() => setCategoryModalVisible(true)}
                   />
                   <Button
                     label="Discard"
@@ -497,11 +541,52 @@ Return JSON only with these exact keys:
           </ScrollView>
         </SafeAreaView>
       </Modal>
+
+      {/* ── Category picker modal ── */}
+      <Modal
+        visible={categoryModalVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setCategoryModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContentCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Select category</Text>
+              <TouchableOpacity onPress={() => setCategoryModalVisible(false)}>
+                <Text style={styles.modalClose}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={{ maxHeight: 400 }}>
+              {PRODUCT_CATEGORIES.map((c) => (
+                <TouchableOpacity
+                  key={c.value}
+                  style={[styles.categoryItem, tempCategory === c.value && styles.categoryItemSelected]}
+                  onPress={() => setTempCategory(c.value)}
+                >
+                  <Text style={[styles.categoryText, tempCategory === c.value && styles.categoryTextSelected]}>
+                    {c.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+            <View style={{ padding: Spacing.md, gap: Spacing.sm }}>
+              <Button
+                label="Confirm & Save"
+                fullWidth
+                onPress={async () => {
+                  setCategoryModalVisible(false);
+                  await saveProduct();
+                }}
+              />
+              <Button label="Cancel" variant="ghost" fullWidth onPress={() => setCategoryModalVisible(false)} />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
-
-
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.bg },
@@ -617,6 +702,33 @@ const styles = StyleSheet.create({
   },
   blacklistIngredients: {
     color: Colors.warning,
+    fontWeight: FontWeight.semiBold,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalContentCard: {
+    backgroundColor: Colors.bg,
+    borderTopLeftRadius: Radius.lg,
+    borderTopRightRadius: Radius.lg,
+    paddingBottom: Spacing.xl,
+  },
+  categoryItem: {
+    padding: Spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.borderSubtle,
+  },
+  categoryItemSelected: {
+    backgroundColor: Colors.bgElevated,
+  },
+  categoryText: {
+    fontSize: FontSize.base,
+    color: Colors.textPrimary,
+  },
+  categoryTextSelected: {
+    color: Colors.primary,
     fontWeight: FontWeight.semiBold,
   },
 });
