@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
+import { CameraView, CameraType, useCameraPermissions } from 'expo-camera';
 import { supabase, getCurrentUser } from '@/lib/supabase';
 import { imageUriToBase64, uploadImageToSupabase } from '@/lib/imageUtils';
 import { showAlert } from '@/lib/toast';
@@ -18,7 +19,7 @@ import { Button, Card } from '@/components/ui';
 import { Colors, FontSize, FontWeight, Spacing, Radius } from '@/constants';
 import type { SkinScan } from '@/types';
 
-type ScanStep = 'idle' | 'captured' | 'analyzing' | 'result';
+type ScanStep = 'idle' | 'camera' | 'captured' | 'analyzing' | 'result';
 
 const SEVERITY_COLOR: Record<string, string> = {
   none: Colors.concernNone,
@@ -32,43 +33,52 @@ export default function ScanScreen() {
   const [imageUri, setImageUri] = useState<string | null>(null);
   const [result, setResult] = useState<SkinScan | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [facing, setFacing] = useState<CameraType>('front');
+  const [cameraReady, setCameraReady] = useState(false);
+  const cameraRef = useRef<CameraView>(null);
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
 
-  const pickImage = async (fromCamera: boolean) => {
+  // ── Open in-app live camera ──────────────────────────────────────────────
+  const openCamera = async () => {
     setErrorMsg(null);
-
-    // Camera is native-only — on web always fall back to library picker
-    if (fromCamera && Platform.OS === 'web') {
-      showAlert('Camera not available', 'Please upload a photo from your library instead.');
-      fromCamera = false;
+    if (!cameraPermission?.granted) {
+      const result = await requestCameraPermission();
+      if (!result.granted) {
+        showAlert('Permission required', 'LIAN needs camera access to scan your skin.');
+        return;
+      }
     }
+    setCameraReady(false);
+    setStep('camera');
+  };
 
-    const permission = fromCamera
-      ? await ImagePicker.requestCameraPermissionsAsync()
-      : await ImagePicker.requestMediaLibraryPermissionsAsync();
+  const capturePhoto = async () => {
+    if (!cameraRef.current || !cameraReady) return;
+    try {
+      const photo = await cameraRef.current.takePictureAsync({ quality: 0.85 });
+      if (photo?.uri) {
+        setImageUri(photo.uri);
+        setStep('captured');
+      }
+    } catch (e) {
+      showAlert('Capture failed', String(e));
+    }
+  };
 
+  // ── Upload from library ──────────────────────────────────────────────────
+  const pickImage = async () => {
+    setErrorMsg(null);
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
-      showAlert(
-        'Permission required',
-        `LIAN needs ${fromCamera ? 'camera' : 'photo library'} access to scan your skin.`,
-      );
+      showAlert('Permission required', 'LIAN needs photo library access to scan your skin.');
       return;
     }
-
-    const picked = fromCamera
-      ? await ImagePicker.launchCameraAsync({
-          mediaTypes: 'images',
-          allowsEditing: true,
-          aspect: [1, 1],
-          quality: 0.8,
-          // No cameraType — deprecated in SDK 57; front/back chosen by user
-        })
-      : await ImagePicker.launchImageLibraryAsync({
-          mediaTypes: 'images',
-          allowsEditing: true,
-          aspect: [1, 1],
-          quality: 0.8,
-        });
-
+    const picked = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: 'images',
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+    });
     if (!picked.canceled && picked.assets[0]) {
       setImageUri(picked.assets[0].uri);
       setStep('captured');
@@ -218,22 +228,19 @@ ${JSON.stringify(youcamRaw, null, 2)}`,
         {step === 'idle' && (
           <>
             <View style={styles.photoOptions}>
-              {/* Camera only on native */}
-              {Platform.OS !== 'web' && (
-                <TouchableOpacity
-                  style={styles.photoOption}
-                  onPress={() => pickImage(true)}
-                  accessibilityRole="button"
-                  accessibilityLabel="Take a photo with your camera"
-                >
-                  <Text style={styles.photoEmoji}>📷</Text>
-                  <Text style={styles.photoLabel}>Take photo</Text>
-                  <Text style={styles.photoDesc}>Use camera</Text>
-                </TouchableOpacity>
-              )}
               <TouchableOpacity
-                style={[styles.photoOption, Platform.OS === 'web' && styles.photoOptionFull]}
-                onPress={() => pickImage(false)}
+                style={styles.photoOption}
+                onPress={openCamera}
+                accessibilityRole="button"
+                accessibilityLabel="Scan live with camera"
+              >
+                <Text style={styles.photoEmoji}>📸</Text>
+                <Text style={styles.photoLabel}>Scan live</Text>
+                <Text style={styles.photoDesc}>Use your camera</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.photoOption}
+                onPress={pickImage}
                 accessibilityRole="button"
                 accessibilityLabel="Upload a photo from your library"
               >
@@ -247,7 +254,7 @@ ${JSON.stringify(youcamRaw, null, 2)}`,
               <Text style={styles.tipTitle}>Tips for accurate results</Text>
               {[
                 '💡 Natural light — face a window',
-                '📱 Camera at face level',
+                '📱 Hold camera at face level',
                 '😐 Neutral expression, no glasses',
                 '🚿 Clean bare skin, no makeup',
               ].map((tip) => (
@@ -255,6 +262,58 @@ ${JSON.stringify(youcamRaw, null, 2)}`,
               ))}
             </Card>
           </>
+        )}
+
+        {/* ── Live Camera ── */}
+        {step === 'camera' && (
+          <View style={styles.cameraContainer}>
+            <CameraView
+              ref={cameraRef}
+              style={styles.camera}
+              facing={facing}
+              onCameraReady={() => setCameraReady(true)}
+            >
+              {/* Face oval guide */}
+              <View style={styles.ovalGuideContainer} pointerEvents="none">
+                <View style={styles.ovalGuide} />
+                <Text style={styles.ovalLabel}>Position your face inside the oval</Text>
+              </View>
+
+              {/* Controls */}
+              <View style={styles.cameraControls}>
+                {/* Cancel */}
+                <TouchableOpacity
+                  style={styles.camBtnSecondary}
+                  onPress={() => setStep('idle')}
+                  accessibilityRole="button"
+                  accessibilityLabel="Cancel camera"
+                >
+                  <Text style={styles.camBtnSecondaryText}>✕</Text>
+                </TouchableOpacity>
+
+                {/* Capture */}
+                <TouchableOpacity
+                  style={[styles.captureBtn, !cameraReady && styles.captureBtnDisabled]}
+                  onPress={capturePhoto}
+                  disabled={!cameraReady}
+                  accessibilityRole="button"
+                  accessibilityLabel="Take photo"
+                >
+                  <View style={styles.captureBtnInner} />
+                </TouchableOpacity>
+
+                {/* Flip */}
+                <TouchableOpacity
+                  style={styles.camBtnSecondary}
+                  onPress={() => setFacing(f => f === 'front' ? 'back' : 'front')}
+                  accessibilityRole="button"
+                  accessibilityLabel="Flip camera"
+                >
+                  <Text style={styles.camBtnSecondaryText}>🔄</Text>
+                </TouchableOpacity>
+              </View>
+            </CameraView>
+          </View>
         )}
 
         {/* ── Captured: preview ── */}
@@ -410,6 +469,71 @@ const styles = StyleSheet.create({
   photoDesc: { fontSize: FontSize.xs, color: Colors.textSecondary },
   tipTitle: { fontSize: FontSize.base, fontWeight: FontWeight.semiBold, color: Colors.textPrimary, marginBottom: Spacing.sm },
   tip: { fontSize: FontSize.sm, color: Colors.textSecondary, lineHeight: 22 },
+  // ── Camera ──
+  cameraContainer: {
+    borderRadius: Radius.lg,
+    overflow: 'hidden',
+    aspectRatio: 3 / 4,
+    width: '100%',
+    backgroundColor: '#000',
+  },
+  camera: { flex: 1 },
+  ovalGuideContainer: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.md,
+  },
+  ovalGuide: {
+    width: '62%',
+    aspectRatio: 3 / 4,
+    borderRadius: 999,
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.7)',
+  },
+  ovalLabel: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: FontSize.sm,
+    textAlign: 'center',
+    textShadowColor: 'rgba(0,0,0,0.6)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 4,
+  },
+  cameraControls: {
+    position: 'absolute',
+    bottom: 28,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-evenly',
+  },
+  captureBtn: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    borderWidth: 4,
+    borderColor: '#fff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  captureBtnDisabled: { opacity: 0.4 },
+  captureBtnInner: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    backgroundColor: '#fff',
+  },
+  camBtnSecondary: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  camBtnSecondaryText: { fontSize: 20 },
+  // ── Preview & results ──
   preview: { borderRadius: Radius.lg, overflow: 'hidden', position: 'relative' },
   previewImage: { width: '100%', aspectRatio: 1, borderRadius: Radius.lg },
   analyzingOverlay: {
