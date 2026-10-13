@@ -335,10 +335,30 @@ ${JSON.stringify(youcamRaw, null, 2)}`,
 
 // ─── Parse YouCam raw response into our concern schema ────────────────────────
 function parseConcerns(youcamRaw: Record<string, unknown>) {
-  const scoreMap = (
-    (youcamRaw?.scores ?? youcamRaw?.results ?? youcamRaw?.data ?? {}) as Record<string, number>
-  );
+  // YouCam SD API shape: { output: [{ type: 'acne', ui_score: 68, raw_score: 57.33 }, ...] }
+  const output = youcamRaw?.output as { type: string; ui_score?: number; raw_score?: number }[] | undefined;
 
+  if (Array.isArray(output) && output.length > 0) {
+    return output
+      .filter((item) => item?.type && (item.ui_score != null || item.raw_score != null))
+      .map((item) => {
+        const score = Math.min(100, Math.max(0, item.ui_score ?? item.raw_score ?? 0));
+        return {
+          concern: item.type,
+          score,
+          severity:
+            score >= 70 ? 'severe' :
+            score >= 45 ? 'moderate' :
+            score >= 20 ? 'mild' : 'none',
+        };
+      })
+      .sort((a, b) => b.score - a.score);
+  }
+
+  // Fallback: try flat score map (e.g. { acne: 68, wrinkle: 45 })
+  const scoreMap = (
+    (youcamRaw?.scores ?? youcamRaw?.results ?? youcamRaw?.data ?? youcamRaw) as Record<string, number>
+  );
   return Object.entries(scoreMap)
     .filter(([, score]) => typeof score === 'number')
     .map(([key, score]) => {
